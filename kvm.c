@@ -96,6 +96,11 @@ void kvm_exit_handle(struct kvm_cpu *cpu) {
 void kvm_load_kernel(struct kvm_cpu *cpu, void *kernel, const size_t size) {
   struct setup_header shdr = cpu->bprm.hdr;
 
+  if (shdr.boot_flag != 0xAA55)
+    errx(1, "Invalid boot flag");
+  if (shdr.header != 0x53726448)
+    errx(1, "Invalid setup header");
+
   int offset = (shdr.setup_sects + 1) * 512;
   memcpy((void *)cpu->region.userspace_addr, kernel + offset, size - offset);
 }
