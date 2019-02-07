@@ -1,9 +1,10 @@
 #define _GNU_SOURCE
 
 #include <asm/bootparam.h>
+#include <capstone/capstone.h>
 #include <err.h>
 #include <fcntl.h>
-#include <linux/kvm.h>
+#include <kvm.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -13,24 +14,26 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define MEM_SIZE (1 << 30)
-
 int main(int argc, char **argv) {
-  int ret, fd_kvm, fd_vm, fd_bz, fd_vcpu, vcpu_size;
+  int ret, fd_bz, vcpu_size;
   struct kvm_cpuid2 cpuid;
-  struct kvm_sregs sregs;
-  struct kvm_regs regs;
+  struct kvm_guest_debug debug;
+  struct kvm_cpu cpu;
   struct stat bz_stat;
+  struct boot_params bprm;
+
+  if (cs_open(CS_ARCH_X86, CS_MODE_32, &cpu.handle) != CS_ERR_OK)
+		return -1;
 
   if (argc < 2)
     errx(1, "unable to find the image");
 
-  fd_kvm = open("/dev/kvm", O_RDWR);
-  if (fd_kvm < 0)
+  cpu.fd_kvm = open("/dev/kvm", O_RDWR);
+  if (cpu.fd_kvm < 0)
     err(1, "unable to open /dev/kvm");
 
-  fd_vm = ioctl(fd_kvm, KVM_CREATE_VM, 0);
-  if (fd_vm < 0)
+  cpu.fd_vm = ioctl(cpu.fd_kvm, KVM_CREATE_VM, 0);
+  if (cpu.fd_vm < 0)
     err(1, "unable to create vm");
 
   fd_bz = open(argv[1], O_RDONLY);
@@ -41,31 +44,38 @@ int main(int argc, char **argv) {
   if (ret < 0)
     err(1, "unable to stat bzImage");
 
+  if (bz_stat.st_size + K_BASE_ADDR > MEM_SIZE)
+    errx(1, "no space available for the image");
+
+  // Load kernel
   void *mem_img = mmap(NULL, bz_stat.st_size, PROT_READ | PROT_WRITE,
       MAP_PRIVATE, fd_bz, 0);
 
-  struct setup_header *shdr = mem_img + 0x1f1;
-
-  struct boot_params bprm = {0};
-  memcpy(&bprm.hdr, shdr, sizeof(*shdr));
-
   void *mem_addr = mmap(NULL, MEM_SIZE, PROT_READ | PROT_WRITE,
-      MAP_PRIVATE, -1, 0);
+      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  // Load kernel to vm memory
+  memcpy(mem_addr, mem_img, bz_stat.st_size);
+
+
+  struct setup_header *shdr = mem_img + 0x1f1;
+  memcpy(&bprm.hdr, shdr, sizeof(*shdr));
 
   struct kvm_userspace_memory_region region = {
     .slot = 0,
     .flags = 0,
-    .guest_phys_addr = 0x100000,
+    .guest_phys_addr = K_BASE_ADDR,
     .memory_size = MEM_SIZE,
     .userspace_addr = (__u64)mem_addr,
   };
 
-  ret = ioctl(fd_vm, KVM_SET_USER_MEMORY_REGION, &region);
+  cpu.region = region;
+
+  ret = ioctl(cpu.fd_vm, KVM_SET_USER_MEMORY_REGION, &cpu.region);
   if (ret < 0)
     err(1, "unable to set user memory region");
 
-  fd_vcpu = ioctl(fd_vm, KVM_CREATE_VCPU, 0);
-  if (fd_vcpu < 0)
+  cpu.fd_vcpu = ioctl(cpu.fd_vm, KVM_CREATE_VCPU, 0);
+  if (cpu.fd_vcpu < 0)
     err(1, "unable to create vcpu");
 
 //   ret = ioctl(fd_vcpu, KVM_GET_SUPPORTED_CPUID, &cpuid);
@@ -76,18 +86,18 @@ int main(int argc, char **argv) {
 //   if (ret < 0)
 //     err(1, "unable to set cpuid");
 
-  vcpu_size = ioctl(fd_kvm, KVM_GET_VCPU_MMAP_SIZE, 0);
+  vcpu_size = ioctl(cpu.fd_kvm, KVM_GET_VCPU_MMAP_SIZE, 0);
   if (vcpu_size < 0)
-      err(1, "KVM_GET_VCPU_MMAP_SIZE");
+    err(1, "unable to get vcpu mmap size");
 
-  struct kvm_run *run = mmap(NULL, vcpu_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd_vcpu, 0);
+  cpu.run = mmap(NULL, vcpu_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, cpu.fd_vcpu, 0);
 
-  ioctl(fd_vcpu, KVM_GET_SREGS, &sregs);
+  kvm_get_regs(&cpu);
 
   struct kvm_segment segment = {
     .base = 0,
     .limit = 0xFFFFFFFF,
-    .selector = 0x10,
+    .selector = 0x8,
     .present = 1,
     .type = 0xA, // RX
     .dpl = 0,
@@ -97,53 +107,70 @@ int main(int argc, char **argv) {
     .g = 1, // 4KB
   };
 
-  sregs.cs = segment;
+  cpu.sregs.cs = segment;
 
-  segment.selector = 0x18;
+  segment.selector = 0x10;
   segment.type = 0x2; // RW
-  sregs.ds = sregs.es = sregs.fs = sregs.gs = sregs.ss = segment;
-  sregs.cr0 |= 1; // Protected mode
+  cpu.sregs.ds = cpu.sregs.es = cpu.sregs.fs = cpu.sregs.gs = cpu.sregs.ss = segment;
+  cpu.sregs.cr0 |= 1; // Protected mode
 
-  ioctl(fd_vcpu, KVM_SET_SREGS, &sregs);
+  ret = ioctl(cpu.fd_vcpu, KVM_SET_SREGS, &cpu.sregs);
+  if (ret < 0)
+    err(1, "unable to set cpu sregs");
 
-  ioctl(fd_vcpu, KVM_GET_REGS, &regs);
+  cpu.regs.rflags = 2;
+  cpu.regs.rip = K_BASE_ADDR;
+  cpu.regs.rsi = &bprm;
+  // TODO: find free zone for rsp
+  cpu.regs.rsp = bz_stat.st_size + 0x100000;
 
-  regs.rflags = 2;
+  ret = ioctl(cpu.fd_vcpu, KVM_SET_REGS, &cpu.regs);
+  if (ret < 0)
+    err(1, "unable to set cpu regs");
 
-  regs.rip = 0x100000;
-  regs.rsp = &bprm;
+  debug.control |= KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP;
+  debug.control |= KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_SW_BP;
 
-  ioctl(fd_vcpu, KVM_SET_REGS, &regs);
+  ret = ioctl(cpu.fd_vcpu, KVM_SET_GUEST_DEBUG, &debug);
+  if (ret < 0)
+    errx(1, "unable to set debug mode");
 
   while (1) {
-    ret = ioctl(fd_vcpu, KVM_RUN, 0);
+    kvm_out_regs(&cpu);
+    kvm_out_code(&cpu);
+    ret = ioctl(cpu.fd_vcpu, KVM_RUN, 0);
 
     if (ret < 0)
       warn("KVM_RUN");
 
-    switch (run->exit_reason) {
+    switch (cpu.run->exit_reason) {
       case KVM_EXIT_HLT:
         puts("KVM_EXIT_HLT\n");
         return 0;
       case KVM_EXIT_IO:
-        if (run->io.direction == KVM_EXIT_IO_OUT && run->io.size == 1 && run->io.port == 0x3f8 && run->io.count == 1)
-          putchar(*(((char *)run) + run->io.data_offset));
+        if (cpu.run->io.direction == KVM_EXIT_IO_OUT &&
+            cpu.run->io.size == 1 &&
+            cpu.run->io.port == 0x3f8 &&
+            cpu.run->io.count == 1)
+          putchar(*(((char *)cpu.run) + cpu.run->io.data_offset));
         else
-          warnx("unhandled KVM_EXIT_IO");
+          errx(1, "unhandled KVM_EXIT_IO");
         break;
       case KVM_EXIT_FAIL_ENTRY:
-        warnx("KVM_EXIT_FAIL_ENTRY: hardware_entry_failure_reason = 0x%llx",
-            (unsigned long long)run->fail_entry.hardware_entry_failure_reason);
-        break;
+        errx(1, "KVM_EXIT_FAIL_ENTRY: hardware_entry_failure_reason = 0x%llx",
+            (unsigned long long)cpu.run->fail_entry.hardware_entry_failure_reason);
       case KVM_EXIT_INTERNAL_ERROR:
-        warnx("KVM_EXIT_INTERNAL_ERROR: suberror = 0x%x", run->internal.suberror);
+        errx(1, "KVM_EXIT_INTERNAL_ERROR: suberror = 0x%x", cpu.run->internal.suberror);
+      case KVM_EXIT_DEBUG:
+        kvm_out_regs(&cpu);
+        kvm_out_code(&cpu);
         break;
       default:
-        warnx("exit_reason = 0x%x", run->exit_reason);
-        break;
+        errx(1, "exit_reason = 0x%x", cpu.run->exit_reason);
     }
 
     printf("vm exit, sleeping 1s\n");
     sleep(1);
   }
+	cs_close(&cpu.handle);
 }

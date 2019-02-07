@@ -1,13 +1,20 @@
 CC?=gcc
-CFLAGS=-Wall -Wextra -std=c99 -pedantic -g3 -O0
-SRC=main.c
+CFLAGS=-Wall -Wextra -std=c99 -pedantic -g3 -O0 -I.
+SRC=main.c kvm.c
 OBJ=$(SRC:.c=.o)
 EXEC=my-kvm
+LDFLAGS=-lcapstone
 
 all: $(OBJ)
-	$(CC) $(CFLAGS) $(OBJ) -o $(EXEC)
+	$(CC) $(LDFLAGS) $(OBJ) -o $(EXEC)
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
 
 run:
-	./my-kvm
+	./my-kvm $1
 
-.PHONY:run
+clean:
+	$(RM) $(EXEC) $(OBJ)
+
+.PHONY: run
