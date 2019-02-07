@@ -27,7 +27,6 @@ int main(int argc, char **argv) {
   struct kvm_guest_debug debug;
   struct kvm_cpu cpu;
   struct stat bz_stat;
-  struct boot_params bprm;
 
   if (cs_open(CS_ARCH_X86, CS_MODE_32, &cpu.handle) != CS_ERR_OK)
 		return -1;
@@ -58,13 +57,11 @@ int main(int argc, char **argv) {
   void *mem_img = mmap(NULL, bz_stat.st_size, PROT_READ | PROT_WRITE,
       MAP_PRIVATE, fd_bz, 0);
 
+  struct setup_header *shdr = mem_img + 0x1f1;
+  memcpy(&cpu.bprm.hdr, shdr, sizeof(*shdr));
+
   void *mem_addr = mmap(NULL, MEM_SIZE, PROT_READ | PROT_WRITE,
       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  // Load kernel to vm memory
-  memcpy(mem_addr, mem_img, bz_stat.st_size);
-
-  struct setup_header *shdr = mem_img + 0x1f1;
-  memcpy(&bprm.hdr, shdr, sizeof(*shdr));
 
   struct kvm_userspace_memory_region region = {
     .slot = 0,
@@ -75,6 +72,8 @@ int main(int argc, char **argv) {
   };
 
   cpu.region = region;
+
+  kvm_load_kernel(&cpu, mem_img, bz_stat.st_size);
 
   ret = ioctl(cpu.fd_vm, KVM_SET_USER_MEMORY_REGION, &cpu.region);
   if (ret < 0)
@@ -126,7 +125,7 @@ int main(int argc, char **argv) {
 
   cpu.regs.rflags = 2;
   cpu.regs.rip = K_BASE_ADDR;
-  cpu.regs.rsi = (__u64)&bprm;
+  cpu.regs.rsi = (__u64)&cpu.bprm;
   // TODO: find free zone for rsp
   cpu.regs.rsp = bz_stat.st_size + 0x100000;
 
@@ -143,8 +142,6 @@ int main(int argc, char **argv) {
 
   on_exit(exit_handler, &cpu);
   while (1) {
-    kvm_out_regs(&cpu);
-    kvm_out_code(&cpu);
     ret = ioctl(cpu.fd_vcpu, KVM_RUN, 0);
 
     if (ret < 0)

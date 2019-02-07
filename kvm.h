@@ -14,6 +14,7 @@ struct kvm_cpu {
   struct kvm_regs regs;
   struct kvm_sregs sregs;
   struct kvm_userspace_memory_region region;
+  struct boot_params bprm;
   csh handle; // Capstone handle
 };
 
@@ -21,5 +22,6 @@ void kvm_get_regs(struct kvm_cpu *cpu);
 void kvm_out_code(struct kvm_cpu *cpu);
 void kvm_out_regs(struct kvm_cpu *cpu);
 void kvm_exit_handle(struct kvm_cpu *cpu);
+void kvm_load_kernel(struct kvm_cpu *cpu, void *kernel, const size_t size);
 
 #endif

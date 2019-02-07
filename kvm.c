@@ -1,8 +1,10 @@
+#include <asm/bootparam.h>
 #include <err.h>
 #include <kvm.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/ioctl.h>
 
 static void print_segment(const char *name, struct kvm_segment *seg) {
@@ -66,8 +68,6 @@ void kvm_out_regs(struct kvm_cpu *cpu) {
 	print_segment("es ", &cpu->sregs.es);
 	print_segment("fs ", &cpu->sregs.fs);
 	print_segment("gs ", &cpu->sregs.gs);
-// 	print_dtable("gdt", &sregs.gdt);
-// 	print_dtable("idt", &sregs.idt);
 }
 
 void kvm_exit_handle(struct kvm_cpu *cpu) {
@@ -84,11 +84,6 @@ void kvm_exit_handle(struct kvm_cpu *cpu) {
         else
           errx(1, "unhandled KVM_EXIT_IO");
         break;
-      case KVM_EXIT_FAIL_ENTRY:
-        errx(1, "KVM_EXIT_FAIL_ENTRY: hardware_entry_failure_reason = 0x%llx",
-            (unsigned long long)cpu->run->fail_entry.hardware_entry_failure_reason);
-      case KVM_EXIT_INTERNAL_ERROR:
-        errx(1, "KVM_EXIT_INTERNAL_ERROR: suberror = 0x%x", cpu->run->internal.suberror);
       case KVM_EXIT_DEBUG:
         kvm_out_regs(cpu);
         kvm_out_code(cpu);
@@ -96,4 +91,11 @@ void kvm_exit_handle(struct kvm_cpu *cpu) {
       default:
         errx(1, "exit_reason = 0x%x", cpu->run->exit_reason);
     }
+}
+
+void kvm_load_kernel(struct kvm_cpu *cpu, void *kernel, const size_t size) {
+  struct setup_header shdr = cpu->bprm.hdr;
+
+  int offset = (shdr.setup_sects + 1) * 512;
+  memcpy((void *)cpu->region.userspace_addr, kernel + offset, size - offset);
 }
