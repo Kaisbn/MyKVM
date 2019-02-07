@@ -31,8 +31,8 @@ void kvm_out_code(struct kvm_cpu *cpu) {
 
   kvm_get_regs(cpu);
 
-  void *code = (char *)cpu->region.userspace_addr + cpu->regs.rip - K_BASE_ADDR;
-  count = cs_disasm(cpu->handle, code, 0x10, K_BASE_ADDR, 0, &insn);
+  void *code = (char *)cpu->region.userspace_addr + cpu->regs.rip;
+  count = cs_disasm(cpu->handle, code, 0x10, cpu->regs.rip, 0, &insn);
 	if (count > 0) {
 		size_t j;
 		for (j = 0; j < count; j++) {
@@ -94,7 +94,7 @@ void kvm_exit_handle(struct kvm_cpu *cpu) {
 }
 
 void kvm_load_kernel(struct kvm_cpu *cpu, void *kernel, const size_t size) {
-  struct setup_header shdr = cpu->bprm.hdr;
+  struct setup_header shdr = cpu->bprm->hdr;
 
   if (shdr.boot_flag != 0xAA55)
     errx(1, "Invalid boot flag");
@@ -102,5 +102,65 @@ void kvm_load_kernel(struct kvm_cpu *cpu, void *kernel, const size_t size) {
     errx(1, "Invalid setup header");
 
   int offset = (shdr.setup_sects + 1) * 512;
-  memcpy((void *)cpu->region.userspace_addr, kernel + offset, size - offset);
+  memcpy((void *)cpu->region.userspace_addr + 0x100000, kernel + offset, size - offset);
+}
+
+void kvm_setup_bprm(struct kvm_cpu *cpu, struct setup_header *shdr) {
+  cpu->bprm = cpu->region.userspace_addr + 0x20000;
+  memset(cpu->bprm, 0, sizeof(struct boot_params));
+  memcpy(&cpu->bprm->hdr, shdr, sizeof(*shdr));
+
+  cpu->bprm->hdr.loadflags |= KEEP_SEGMENTS;
+
+  struct boot_e820_entry *primary = &cpu->bprm->e820_table[0];
+	struct boot_e820_entry *secondary = &cpu->bprm->e820_table[1];
+
+  primary->addr = cpu->region.userspace_addr;
+	primary->size = cpu->region.memory_size;
+	primary->type = 1;
+
+  secondary->addr = cpu->region2.userspace_addr;
+	secondary->size = cpu->region2.memory_size;
+	secondary->type = 1;
+
+  cpu->bprm->e820_entries = 2;
+}
+
+void kvm_set_cpuid(struct kvm_cpu *cpu) {
+  struct kvm_cpuid2 cpuid = {
+    .nent = 4
+  };
+
+  struct kvm_cpuid_entry2 cpuid_entries[] = {
+    {
+      .function = 0,
+      .eax = 1,
+      .ebx = 0,
+      .ecx = 0,
+      .edx = 0
+    }, {
+      .function = 1,
+      .eax = 0x400,
+      .ebx = 0,
+      .ecx = 0,
+      .edx = 0x701b179
+    }, {
+      .function = 0x80000000,
+      .eax = 0x80000001,
+      .ebx = 0,
+      .ecx = 0,
+      .edx = 0
+    }, {
+      .function = 0x80000001,
+      .eax = 0,
+      .ebx = 0,
+      .ecx = 0,
+      .edx = 0x20100800
+    }
+  };
+
+  memcpy(&cpuid.entries, &cpuid_entries, sizeof(struct kvm_cpuid_entry2) * 4);
+  int ret = ioctl(cpu->fd_vcpu, KVM_SET_CPUID2, &cpuid);
+  if (ret < 0)
+    err(1, "unable to set cpuid");
 }

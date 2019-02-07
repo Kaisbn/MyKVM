@@ -57,45 +57,54 @@ int main(int argc, char **argv) {
   void *mem_img = mmap(NULL, bz_stat.st_size, PROT_READ | PROT_WRITE,
       MAP_PRIVATE, fd_bz, 0);
 
-  struct setup_header *shdr = mem_img + 0x1f1;
-  memcpy(&cpu.bprm.hdr, shdr, sizeof(*shdr));
-
   void *mem_addr = mmap(NULL, MEM_SIZE, PROT_READ | PROT_WRITE,
       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
-  struct kvm_userspace_memory_region region = {
+  void *mem_addr2 = mmap(NULL, 0x1000000, PROT_READ | PROT_WRITE,
+      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+  struct kvm_userspace_memory_region primary = {
     .slot = 0,
     .flags = 0,
-    .guest_phys_addr = K_BASE_ADDR,
+    .guest_phys_addr = 0,
     .memory_size = MEM_SIZE,
     .userspace_addr = (__u64)mem_addr,
   };
 
-  cpu.region = region;
+  struct kvm_userspace_memory_region secondary = {
+    .slot = 1,
+    .flags = 0,
+    .guest_phys_addr = MEM_SIZE,
+    .memory_size = 0x1000000,
+    .userspace_addr = (__u64)mem_addr2,
+  };
+
+  cpu.region = primary;
+  cpu.region2 = secondary;
+
+  ret = ioctl(cpu.fd_vm, KVM_SET_USER_MEMORY_REGION, &primary);
+  if (ret < 0)
+    err(1, "unable to set primary user memory region");
+
+  ret = ioctl(cpu.fd_vm, KVM_SET_USER_MEMORY_REGION, &secondary);
+  if (ret < 0)
+    err(1, "unable to set secondary user memory region");
+
+  kvm_setup_bprm(&cpu, mem_img + 0x1f1);
 
   kvm_load_kernel(&cpu, mem_img, bz_stat.st_size);
-
-  ret = ioctl(cpu.fd_vm, KVM_SET_USER_MEMORY_REGION, &cpu.region);
-  if (ret < 0)
-    err(1, "unable to set user memory region");
 
   cpu.fd_vcpu = ioctl(cpu.fd_vm, KVM_CREATE_VCPU, 0);
   if (cpu.fd_vcpu < 0)
     err(1, "unable to create vcpu");
 
-//   ret = ioctl(fd_vcpu, KVM_GET_SUPPORTED_CPUID, &cpuid);
-//   if (ret < 0)
-//     err(1, "unable to get supported cpuid");
-//
-//   ret = ioctl(fd_vcpu, KVM_SET_CPUID2, &cpuid);
-//   if (ret < 0)
-//     err(1, "unable to set cpuid");
+  kvm_set_cpuid(&cpu);
 
   vcpu_size = ioctl(cpu.fd_kvm, KVM_GET_VCPU_MMAP_SIZE, 0);
   if (vcpu_size < 0)
     err(1, "unable to get vcpu mmap size");
 
-  cpu.run = mmap(NULL, vcpu_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, cpu.fd_vcpu, 0);
+  cpu.run = mmap(NULL, vcpu_size, PROT_READ | PROT_WRITE, MAP_SHARED, cpu.fd_vcpu, 0);
 
   kvm_get_regs(&cpu);
 
@@ -125,7 +134,7 @@ int main(int argc, char **argv) {
 
   cpu.regs.rflags = 2;
   cpu.regs.rip = K_BASE_ADDR;
-  cpu.regs.rsi = (__u64)&cpu.bprm;
+  cpu.regs.rsi = (void *)cpu.bprm - mem_addr;
   // TODO: find free zone for rsp
   cpu.regs.rsp = bz_stat.st_size + 0x100000;
 
@@ -139,6 +148,7 @@ int main(int argc, char **argv) {
   ret = ioctl(cpu.fd_vcpu, KVM_SET_GUEST_DEBUG, &debug);
   if (ret < 0)
     errx(1, "unable to set debug mode");
+
 
   on_exit(exit_handler, &cpu);
   while (1) {
