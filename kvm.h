@@ -20,5 +20,6 @@ struct kvm_cpu {
 void kvm_get_regs(struct kvm_cpu *cpu);
 void kvm_out_code(struct kvm_cpu *cpu);
 void kvm_out_regs(struct kvm_cpu *cpu);
+void kvm_exit_handle(struct kvm_cpu *cpu);
 
 #endif

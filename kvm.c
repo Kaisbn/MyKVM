@@ -2,6 +2,8 @@
 #include <kvm.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <sys/ioctl.h>
 
 static void print_segment(const char *name, struct kvm_segment *seg) {
   printf(" %s       %04hx      %016llx  %08x  %02hhx    %x %x   %x  %x %x %x %x\n",
@@ -27,7 +29,7 @@ void kvm_out_code(struct kvm_cpu *cpu) {
 
   kvm_get_regs(cpu);
 
-  void *code = cpu->region.userspace_addr + cpu->regs.rip - K_BASE_ADDR;
+  void *code = (char *)cpu->region.userspace_addr + cpu->regs.rip - K_BASE_ADDR;
   count = cs_disasm(cpu->handle, code, 0x10, K_BASE_ADDR, 0, &insn);
 	if (count > 0) {
 		size_t j;
@@ -68,3 +70,30 @@ void kvm_out_regs(struct kvm_cpu *cpu) {
 // 	print_dtable("idt", &sregs.idt);
 }
 
+void kvm_exit_handle(struct kvm_cpu *cpu) {
+    switch (cpu->run->exit_reason) {
+      case KVM_EXIT_HLT:
+        puts("KVM_EXIT_HLT\n");
+        exit(0);
+      case KVM_EXIT_IO:
+        if (cpu->run->io.direction == KVM_EXIT_IO_OUT &&
+            cpu->run->io.size == 1 &&
+            cpu->run->io.port == 0x3f8 &&
+            cpu->run->io.count == 1)
+          putchar(*(((char *)cpu->run) + cpu->run->io.data_offset));
+        else
+          errx(1, "unhandled KVM_EXIT_IO");
+        break;
+      case KVM_EXIT_FAIL_ENTRY:
+        errx(1, "KVM_EXIT_FAIL_ENTRY: hardware_entry_failure_reason = 0x%llx",
+            (unsigned long long)cpu->run->fail_entry.hardware_entry_failure_reason);
+      case KVM_EXIT_INTERNAL_ERROR:
+        errx(1, "KVM_EXIT_INTERNAL_ERROR: suberror = 0x%x", cpu->run->internal.suberror);
+      case KVM_EXIT_DEBUG:
+        kvm_out_regs(cpu);
+        kvm_out_code(cpu);
+        break;
+      default:
+        errx(1, "exit_reason = 0x%x", cpu->run->exit_reason);
+    }
+}

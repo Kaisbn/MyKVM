@@ -14,9 +14,16 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+void exit_handler(int status, void *arg) {
+  (void)status;
+
+  struct kvm_cpu *cpu = arg;
+	cs_close(&cpu->handle);
+}
+
 int main(int argc, char **argv) {
   int ret, fd_bz, vcpu_size;
-  struct kvm_cpuid2 cpuid;
+//   struct kvm_cpuid2 cpuid;
   struct kvm_guest_debug debug;
   struct kvm_cpu cpu;
   struct stat bz_stat;
@@ -44,7 +51,7 @@ int main(int argc, char **argv) {
   if (ret < 0)
     err(1, "unable to stat bzImage");
 
-  if (bz_stat.st_size + K_BASE_ADDR > MEM_SIZE)
+  if (bz_stat.st_size > MEM_SIZE)
     errx(1, "no space available for the image");
 
   // Load kernel
@@ -55,7 +62,6 @@ int main(int argc, char **argv) {
       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   // Load kernel to vm memory
   memcpy(mem_addr, mem_img, bz_stat.st_size);
-
 
   struct setup_header *shdr = mem_img + 0x1f1;
   memcpy(&bprm.hdr, shdr, sizeof(*shdr));
@@ -120,7 +126,7 @@ int main(int argc, char **argv) {
 
   cpu.regs.rflags = 2;
   cpu.regs.rip = K_BASE_ADDR;
-  cpu.regs.rsi = &bprm;
+  cpu.regs.rsi = (__u64)&bprm;
   // TODO: find free zone for rsp
   cpu.regs.rsp = bz_stat.st_size + 0x100000;
 
@@ -135,6 +141,7 @@ int main(int argc, char **argv) {
   if (ret < 0)
     errx(1, "unable to set debug mode");
 
+  on_exit(exit_handler, &cpu);
   while (1) {
     kvm_out_regs(&cpu);
     kvm_out_code(&cpu);
@@ -143,34 +150,7 @@ int main(int argc, char **argv) {
     if (ret < 0)
       warn("KVM_RUN");
 
-    switch (cpu.run->exit_reason) {
-      case KVM_EXIT_HLT:
-        puts("KVM_EXIT_HLT\n");
-        return 0;
-      case KVM_EXIT_IO:
-        if (cpu.run->io.direction == KVM_EXIT_IO_OUT &&
-            cpu.run->io.size == 1 &&
-            cpu.run->io.port == 0x3f8 &&
-            cpu.run->io.count == 1)
-          putchar(*(((char *)cpu.run) + cpu.run->io.data_offset));
-        else
-          errx(1, "unhandled KVM_EXIT_IO");
-        break;
-      case KVM_EXIT_FAIL_ENTRY:
-        errx(1, "KVM_EXIT_FAIL_ENTRY: hardware_entry_failure_reason = 0x%llx",
-            (unsigned long long)cpu.run->fail_entry.hardware_entry_failure_reason);
-      case KVM_EXIT_INTERNAL_ERROR:
-        errx(1, "KVM_EXIT_INTERNAL_ERROR: suberror = 0x%x", cpu.run->internal.suberror);
-      case KVM_EXIT_DEBUG:
-        kvm_out_regs(&cpu);
-        kvm_out_code(&cpu);
-        break;
-      default:
-        errx(1, "exit_reason = 0x%x", cpu.run->exit_reason);
-    }
-
-    printf("vm exit, sleeping 1s\n");
+    kvm_exit_handle(&cpu);
     sleep(1);
   }
-	cs_close(&cpu.handle);
 }
