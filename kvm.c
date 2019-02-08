@@ -76,18 +76,42 @@ void kvm_exit_handle(struct kvm_cpu *cpu) {
         puts("KVM_EXIT_HLT\n");
         exit(0);
       case KVM_EXIT_IO:
-        if (cpu->run->io.direction == KVM_EXIT_IO_OUT &&
-            cpu->run->io.size == 1 &&
-            cpu->run->io.port == 0x3f8 &&
-            cpu->run->io.count == 1)
-          putchar(*(((char *)cpu->run) + cpu->run->io.data_offset));
-        else
-          errx(1, "unhandled KVM_EXIT_IO");
-        break;
+        {
+          void *io_data = cpu->run + cpu->run->io.data_offset;
+          switch (cpu->run->io.direction) {
+            case KVM_EXIT_IO_OUT:
+              printf("KVM_EXIT_IO_OUT: 0x%x\n", cpu->run->io.port);
+              switch (cpu->run->io.port) {
+                case 0x3f8:
+                  putchar((char)io_data);
+                  break;
+              }
+              break;
+            case KVM_EXIT_IO_IN:
+              printf("KVM_EXIT_IO_IN: 0x%x\n", cpu->run->io.port);
+              switch (cpu->run->io.port) {
+                case 0x3fd:
+                  printf("KVM_EXIT_IO_IN: 0x%x\n", cpu->run->io.port);
+                  break;
+              }
+              break;
+            default:
+              warnx("unhandled KVM_EXIT_IO 0x%x", cpu->run->io.port);
+              break;
+          }
+          break;
+        }
+      case KVM_EXIT_FAIL_ENTRY:
+        errx(1, "KVM_EXIT_FAIL_ENTRY: hardware_entry_failure_reason = 0x%llx",
+           (unsigned long long)cpu->run->fail_entry.hardware_entry_failure_reason);
       case KVM_EXIT_DEBUG:
         kvm_out_regs(cpu);
         kvm_out_code(cpu);
         break;
+      case KVM_EXIT_MMIO:
+        errx(1, "KVM_EXIT_MMIO");
+      case KVM_EXIT_SHUTDOWN:
+        errx(1, "KVM_EXIT_SHUTDOWN");
       default:
         errx(1, "exit_reason = 0x%x", cpu->run->exit_reason);
     }
@@ -96,21 +120,28 @@ void kvm_exit_handle(struct kvm_cpu *cpu) {
 void kvm_load_kernel(struct kvm_cpu *cpu, void *kernel, const size_t size) {
   struct setup_header shdr = cpu->bprm->hdr;
 
-  if (shdr.boot_flag != 0xAA55)
-    errx(1, "Invalid boot flag");
-  if (shdr.header != 0x53726448)
-    errx(1, "Invalid setup header");
-
   int offset = (shdr.setup_sects + 1) * 512;
   memcpy((void *)cpu->region.userspace_addr + 0x100000, kernel + offset, size - offset);
 }
 
 void kvm_setup_bprm(struct kvm_cpu *cpu, struct setup_header *shdr) {
+  if (shdr->boot_flag != 0xAA55)
+    errx(1, "Invalid boot flag");
+  if (shdr->header != 0x53726448)
+    errx(1, "Invalid setup header");
+
   cpu->bprm = cpu->region.userspace_addr + 0x20000;
   memset(cpu->bprm, 0, sizeof(struct boot_params));
   memcpy(&cpu->bprm->hdr, shdr, sizeof(*shdr));
 
+
+  cpu->bprm->hdr.type_of_loader = 0xFF;
   cpu->bprm->hdr.loadflags |= KEEP_SEGMENTS;
+  cpu->bprm->hdr.loadflags |= LOADED_HIGH;
+  const char *cmdline = "earlyprintk=serial";
+
+  cpu->bprm->hdr.cmd_line_ptr = 0x40000;
+  strcpy(cpu->bprm->hdr.cmd_line_ptr + cpu->region.userspace_addr, cmdline); 
 
   struct boot_e820_entry *primary = &cpu->bprm->e820_table[0];
 	struct boot_e820_entry *secondary = &cpu->bprm->e820_table[1];

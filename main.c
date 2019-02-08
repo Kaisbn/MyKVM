@@ -23,9 +23,9 @@ void exit_handler(int status, void *arg) {
 
 int main(int argc, char **argv) {
   int ret, fd_bz, vcpu_size;
-//   struct kvm_cpuid2 cpuid;
   struct kvm_guest_debug debug;
   struct kvm_cpu cpu;
+  struct kvm_pit_config pit = {0};
   struct stat bz_stat;
 
   if (cs_open(CS_ARCH_X86, CS_MODE_32, &cpu.handle) != CS_ERR_OK)
@@ -42,6 +42,16 @@ int main(int argc, char **argv) {
   if (cpu.fd_vm < 0)
     err(1, "unable to create vm");
 
+	ret = ioctl(cpu.fd_vm, KVM_CREATE_IRQCHIP, 0);
+  if (ret < 0)
+    err(1, "unable to create irqchip");
+
+  pit.flags = KVM_PIT_SPEAKER_DUMMY;
+
+	ret = ioctl(cpu.fd_vm, KVM_CREATE_PIT2, &pit);
+  if (ret < 0)
+    err(1, "unable to create pit");
+
   fd_bz = open(argv[1], O_RDONLY);
   if (fd_bz < 0)
     err(1, "unable to open bzImage");
@@ -57,15 +67,23 @@ int main(int argc, char **argv) {
   void *mem_img = mmap(NULL, bz_stat.st_size, PROT_READ | PROT_WRITE,
       MAP_PRIVATE, fd_bz, 0);
 
-  void *mem_addr = mmap(NULL, MEM_SIZE, PROT_READ | PROT_WRITE,
+  if (mem_img == MAP_FAILED)
+    err(1, "mmap failed");
+
+  void *mem_addr = mmap(NULL, MEM_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC,
       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
-  void *mem_addr2 = mmap(NULL, 0x1000000, PROT_READ | PROT_WRITE,
+  if (mem_addr == MAP_FAILED)
+    err(1, "mmap failed");
+
+  void *mem_addr2 = mmap(NULL, 0x1000000, PROT_READ | PROT_WRITE | PROT_EXEC,
       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+  if (mem_addr2 == MAP_FAILED)
+    err(1, "mmap failed");
 
   struct kvm_userspace_memory_region primary = {
     .slot = 0,
-    .flags = 0,
     .guest_phys_addr = 0,
     .memory_size = MEM_SIZE,
     .userspace_addr = (__u64)mem_addr,
@@ -73,7 +91,6 @@ int main(int argc, char **argv) {
 
   struct kvm_userspace_memory_region secondary = {
     .slot = 1,
-    .flags = 0,
     .guest_phys_addr = MEM_SIZE,
     .memory_size = 0x1000000,
     .userspace_addr = (__u64)mem_addr2,
@@ -127,28 +144,28 @@ int main(int argc, char **argv) {
   segment.type = 0x2; // RW
   cpu.sregs.ds = cpu.sregs.es = cpu.sregs.fs = cpu.sregs.gs = cpu.sregs.ss = segment;
   cpu.sregs.cr0 |= 1; // Protected mode
+  cpu.sregs.cr4 &= ~(1 << 5);
 
   ret = ioctl(cpu.fd_vcpu, KVM_SET_SREGS, &cpu.sregs);
   if (ret < 0)
     err(1, "unable to set cpu sregs");
 
+  memset(&cpu.regs, 0, sizeof(cpu.regs));
   cpu.regs.rflags = 2;
   cpu.regs.rip = K_BASE_ADDR;
   cpu.regs.rsi = (void *)cpu.bprm - mem_addr;
   // TODO: find free zone for rsp
-  cpu.regs.rsp = bz_stat.st_size + 0x100000;
+  cpu.regs.rsp = 0x60000;
 
   ret = ioctl(cpu.fd_vcpu, KVM_SET_REGS, &cpu.regs);
   if (ret < 0)
     err(1, "unable to set cpu regs");
 
-  debug.control |= KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP;
-  debug.control |= KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_SW_BP;
+  debug.control = KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP | KVM_GUESTDBG_USE_SW_BP;
 
-  ret = ioctl(cpu.fd_vcpu, KVM_SET_GUEST_DEBUG, &debug);
+//   ret = ioctl(cpu.fd_vcpu, KVM_SET_GUEST_DEBUG, &debug);
   if (ret < 0)
-    errx(1, "unable to set debug mode");
-
+    err(1, "unable to set debug mode");
 
   on_exit(exit_handler, &cpu);
   while (1) {
@@ -158,6 +175,5 @@ int main(int argc, char **argv) {
       warn("KVM_RUN");
 
     kvm_exit_handle(&cpu);
-    sleep(1);
   }
 }

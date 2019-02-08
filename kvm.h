@@ -25,5 +25,6 @@ void kvm_out_regs(struct kvm_cpu *cpu);
 void kvm_exit_handle(struct kvm_cpu *cpu);
 void kvm_load_kernel(struct kvm_cpu *cpu, void *kernel, const size_t size);
 void kvm_set_cpuid(struct kvm_cpu *cpu);
+void kvm_setup_bprm(struct kvm_cpu *cpu, struct setup_header *shdr);
 
 #endif
