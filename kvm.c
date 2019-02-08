@@ -74,33 +74,6 @@ void kvm_out_regs(struct kvm_cpu *cpu) {
 	print_segment("gs ", &cpu->sregs.gs);
 }
 
-void kvm_handle_serial(struct kvm_cpu *cpu) {
-    void *io_data = (void *)cpu->run + cpu->run->io.data_offset;
-    int lsr = 0x20;
-    switch (cpu->run->io.direction) {
-      case KVM_EXIT_IO_OUT:
-        switch (cpu->run->io.port) {
-          case 0x3f8:
-            printf(io_data);
-            break;
-          default:
-            break;
-        }
-        break;
-      case KVM_EXIT_IO_IN:
-        switch (cpu->run->io.port) {
-          case 0x3fd:
-            memcpy(io_data, &lsr, sizeof(int));
-            break;
-          default:
-            break;
-        }
-        break;
-      default:
-        break;
-    }
-}
-
 void kvm_exit_handle(struct kvm_cpu *cpu) {
     switch (cpu->run->exit_reason) {
       case KVM_EXIT_HLT:

@@ -1,6 +1,8 @@
 CC?=gcc
 CFLAGS=-Wall -Wextra -std=c99 -pedantic -g3 -O0 -I.
-SRC=main.c kvm.c
+SRC=main.c \
+		kvm.c \
+		serial.c
 OBJ=$(SRC:.c=.o)
 EXEC=my-kvm
 LDFLAGS=-lcapstone

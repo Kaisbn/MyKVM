@@ -3,6 +3,7 @@
 
 #include <capstone/capstone.h>
 #include <linux/kvm.h>
+#include <serial.h>
 
 #define MEM_SIZE (1 << 30)
 #define K_BASE_ADDR 0x100000
@@ -17,6 +18,7 @@ struct kvm_cpu {
   struct kvm_userspace_memory_region region;
   struct kvm_userspace_memory_region region2;
   struct boot_params *bprm;
+  struct uart_regs *serial;
   csh handle; // Capstone handle
 };
 
@@ -30,5 +32,6 @@ void kvm_setup_bprm(struct kvm_cpu *cpu, struct setup_header *shdr, const char *
 void kvm_set_mem_regions(struct kvm_cpu *cpu);
 void kvm_init_regs(struct kvm_cpu *cpu);
 void kvm_set_debug(struct kvm_cpu *cpu);
+void kvm_load_initrd(struct kvm_cpu *cpu, int fd_init, size_t ksize);
 
 #endif

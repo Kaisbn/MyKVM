@@ -25,6 +25,7 @@ void kvm_init(struct kvm_cpu *cpu, const char *img, const char *initrd, const ch
   int ret, fd_bz, fd_init, vcpu_size;
   struct kvm_pit_config pit = {0};
   struct stat bz_stat;
+  struct uart_regs regs = {0};
 
   cpu->fd_kvm = open("/dev/kvm", O_RDWR);
   if (cpu->fd_kvm < 0)
@@ -92,6 +93,7 @@ void kvm_init(struct kvm_cpu *cpu, const char *img, const char *initrd, const ch
     kvm_set_debug(cpu);
 
   on_exit(exit_handler, cpu);
+  cpu->serial = &regs;
   while (1) {
     ret = ioctl(cpu->fd_vcpu, KVM_RUN, 0);
 
