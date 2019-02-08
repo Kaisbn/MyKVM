@@ -21,8 +21,8 @@ void exit_handler(int status, void *arg) {
   cs_close(&cpu->handle);
 }
 
-void kvm_init(struct kvm_cpu *cpu, const char *img, const char *cmdline, int debug) {
-  int ret, fd_bz, vcpu_size;
+void kvm_init(struct kvm_cpu *cpu, const char *img, const char *initrd, const char *cmdline, int debug) {
+  int ret, fd_bz, fd_init, vcpu_size;
   struct kvm_pit_config pit = {0};
   struct stat bz_stat;
 
@@ -50,7 +50,7 @@ void kvm_init(struct kvm_cpu *cpu, const char *img, const char *cmdline, int deb
   if (ret < 0)
     err(1, "unable to stat bzImage");
 
-  if (bz_stat.st_size > MEM_SIZE)
+  if ((__u64)bz_stat.st_size > cpu->mem_size)
     errx(1, "no space available for the image");
 
   // Load kernel
@@ -65,6 +65,14 @@ void kvm_init(struct kvm_cpu *cpu, const char *img, const char *cmdline, int deb
   kvm_setup_bprm(cpu, mem_img + 0x1f1, cmdline);
 
   kvm_load_kernel(cpu, mem_img, bz_stat.st_size);
+
+  if (initrd) {
+    fd_init = open(initrd, O_RDONLY);
+    if (fd_init < 0)
+      err(1, "unable to open initrd");
+
+    kvm_load_initrd(cpu, fd_init, bz_stat.st_size);
+  }
 
   cpu->fd_vcpu = ioctl(cpu->fd_vm, KVM_CREATE_VCPU, 0);
   if (cpu->fd_vcpu < 0)
@@ -96,7 +104,6 @@ void kvm_init(struct kvm_cpu *cpu, const char *img, const char *cmdline, int deb
 
 int main(int argc, char **argv) {
   struct kvm_cpu cpu = {0};
-  int opt;
   char kernel[1024] = {0};
   char *initrd = NULL;
   char cmdline[1024] = {0};
@@ -127,7 +134,6 @@ int main(int argc, char **argv) {
         break;
       case 'm':
         cpu.mem_size = atoi(optarg);
-        printf("mem: %d\n", cpu.mem_size);
         break;
       case 'h':
       default:
@@ -144,14 +150,12 @@ usage:
     }
   }
 
-  if (!kernel)
+  if (!strcmp(kernel, ""))
     goto usage;
   if (!cpu.mem_size)
     cpu.mem_size = MEM_SIZE;
 
   int debug = 0;
-  kvm_init(&cpu, kernel, cmdline, debug);
-
-  free(kernel);
+  kvm_init(&cpu, kernel, initrd, cmdline, debug);
 }
 

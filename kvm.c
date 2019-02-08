@@ -9,6 +9,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 
 static void print_segment(const char *name, struct kvm_segment *seg) {
   printf(" %s       %04hx      %016llx  %08x  %02hhx    %x %x   %x  %x %x %x %x\n",
@@ -289,4 +290,27 @@ void kvm_set_debug(struct kvm_cpu *cpu) {
   int ret = ioctl(cpu->fd_vcpu, KVM_SET_GUEST_DEBUG, &debug);
   if (ret < 0)
     err(1, "unable to set debug mode");
+}
+
+void kvm_load_initrd(struct kvm_cpu *cpu, int fd_init, size_t ksize) {
+  struct stat init_stat;
+  int ret;
+
+  ret = fstat(fd_init, &init_stat);
+  if (ret < 0)
+    err(1, "unable to stat initrd");
+
+  void *mem_init = mmap(NULL, init_stat.st_size, PROT_READ | PROT_WRITE | PROT_EXEC,
+      MAP_PRIVATE, fd_init, 0);
+
+  if (mem_init == MAP_FAILED)
+    err(1, "mmap failed");
+
+
+  __u64 koffset = 0x100000 + ksize - ((cpu->bprm->hdr.setup_sects + 1) * 512);
+  void *start = (void *)cpu->region.userspace_addr + koffset;
+  memcpy(start, mem_init, init_stat.st_size);
+
+  cpu->bprm->hdr.ramdisk_image = koffset;
+  cpu->bprm->hdr.ramdisk_size = init_stat.st_size;
 }
