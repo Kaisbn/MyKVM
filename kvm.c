@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 #include <asm/bootparam.h>
 #include <err.h>
 #include <kvm.h>
@@ -6,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 
 static void print_segment(const char *name, struct kvm_segment *seg) {
   printf(" %s       %04hx      %016llx  %08x  %02hhx    %x %x   %x  %x %x %x %x\n",
@@ -76,11 +79,10 @@ void kvm_handle_serial(struct kvm_cpu *cpu) {
     switch (cpu->run->io.direction) {
       case KVM_EXIT_IO_OUT:
         switch (cpu->run->io.port) {
-          case 0x3f8: // THR
+          case 0x3f8:
             printf(io_data);
             break;
           default:
-            printf("KVM_EXIT_IO_OUT: 0x%x\n", cpu->run->io.port);
             break;
         }
         break;
@@ -90,12 +92,10 @@ void kvm_handle_serial(struct kvm_cpu *cpu) {
             memcpy(io_data, &lsr, sizeof(int));
             break;
           default:
-            printf("KVM_EXIT_IO_IN: 0x%x\n", cpu->run->io.port);
             break;
         }
         break;
       default:
-        warnx("unhandled KVM_EXIT_IO 0x%x", cpu->run->io.port);
         break;
     }
 }
@@ -131,7 +131,7 @@ void kvm_load_kernel(struct kvm_cpu *cpu, void *kernel, const size_t size) {
   memcpy((void *)cpu->region.userspace_addr + 0x100000, kernel + offset, size - offset);
 }
 
-void kvm_setup_bprm(struct kvm_cpu *cpu, struct setup_header *shdr) {
+void kvm_setup_bprm(struct kvm_cpu *cpu, struct setup_header *shdr, const char *cmdline) {
   if (shdr->boot_flag != 0xAA55)
     errx(1, "Invalid boot flag");
   if (shdr->header != 0x53726448)
@@ -144,8 +144,7 @@ void kvm_setup_bprm(struct kvm_cpu *cpu, struct setup_header *shdr) {
 
   cpu->bprm->hdr.type_of_loader = 0xFF;
   cpu->bprm->hdr.loadflags |= KEEP_SEGMENTS;
-//   cpu->bprm->hdr.loadflags |= LOADED_HIGH;
-  const char *cmdline = "earlyprintk=serial debug ignore_loglevel memblock=debug console=ttyS0";
+  cpu->bprm->hdr.loadflags |= LOADED_HIGH;
 
   cpu->bprm->hdr.cmd_line_ptr = 0x40000;
   strcpy(cpu->bprm->hdr.cmd_line_ptr + cpu->region.userspace_addr, cmdline); 
@@ -201,4 +200,93 @@ void kvm_set_cpuid(struct kvm_cpu *cpu) {
   int ret = ioctl(cpu->fd_vcpu, KVM_SET_CPUID2, &cpuid);
   if (ret < 0)
     err(1, "unable to set cpuid");
+}
+
+void kvm_set_mem_regions(struct kvm_cpu *cpu) {
+  int ret;
+  void *mem_addr = mmap(NULL, cpu->mem_size, PROT_READ | PROT_WRITE | PROT_EXEC,
+      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+  if (mem_addr == MAP_FAILED)
+    err(1, "mmap failed");
+
+  void *mem_addr2 = mmap(NULL, cpu->mem_size, PROT_READ | PROT_WRITE | PROT_EXEC,
+      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+  if (mem_addr2 == MAP_FAILED)
+    err(1, "mmap failed");
+
+  struct kvm_userspace_memory_region primary = {
+    .slot = 0,
+    .guest_phys_addr = 0,
+    .memory_size = cpu->mem_size,
+    .userspace_addr = (__u64)mem_addr,
+  };
+
+  struct kvm_userspace_memory_region secondary = {
+    .slot = 1,
+    .guest_phys_addr = cpu->mem_size,
+    .memory_size = cpu->mem_size,
+    .userspace_addr = (__u64)mem_addr2,
+  };
+
+  cpu->region = primary;
+  cpu->region2 = secondary;
+
+  ret = ioctl(cpu->fd_vm, KVM_SET_USER_MEMORY_REGION, &primary);
+  if (ret < 0)
+    err(1, "unable to set primary user memory region");
+
+  ret = ioctl(cpu->fd_vm, KVM_SET_USER_MEMORY_REGION, &secondary);
+  if (ret < 0)
+    err(1, "unable to set secondary user memory region");
+}
+
+void kvm_init_regs(struct kvm_cpu *cpu) {
+  int ret;
+  kvm_get_regs(cpu);
+
+  struct kvm_segment segment = {
+    .base = 0,
+    .limit = 0xFFFFFFFF,
+    .selector = 0x8,
+    .present = 1,
+    .type = 0xA, // RX
+    .dpl = 0,
+    .db = 1, // 32 bit
+    .s = 1, // Code/data segment
+    .l = 0, // 32 bit
+    .g = 1, // 4KB
+  };
+
+  cpu->sregs.cs = segment;
+
+  segment.selector = 0x10;
+  segment.type = 0x2; // RW
+  cpu->sregs.ds = cpu->sregs.es = cpu->sregs.fs = cpu->sregs.gs = cpu->sregs.ss = segment;
+  cpu->sregs.cr0 |= 1; // Protected mode
+  cpu->sregs.cr4 &= ~(1 << 5);
+
+  ret = ioctl(cpu->fd_vcpu, KVM_SET_SREGS, &cpu->sregs);
+  if (ret < 0)
+    err(1, "unable to set cpu sregs");
+
+  memset(&cpu->regs, 0, sizeof(cpu->regs));
+  cpu->regs.rflags = 2;
+  cpu->regs.rip = K_BASE_ADDR;
+  cpu->regs.rsi = (void *)cpu->bprm - cpu->region.userspace_addr;
+  cpu->regs.rsp = 0x60000;
+
+  ret = ioctl(cpu->fd_vcpu, KVM_SET_REGS, &cpu->regs);
+  if (ret < 0)
+    err(1, "unable to set cpu regs");
+}
+
+void kvm_set_debug(struct kvm_cpu *cpu) {
+  struct kvm_guest_debug debug = {0};
+  debug.control = KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP | KVM_GUESTDBG_USE_SW_BP;
+
+  int ret = ioctl(cpu->fd_vcpu, KVM_SET_GUEST_DEBUG, &debug);
+  if (ret < 0)
+    err(1, "unable to set debug mode");
 }
