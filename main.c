@@ -46,8 +46,6 @@ int main(int argc, char **argv) {
   if (ret < 0)
     err(1, "unable to create irqchip");
 
-  pit.flags = KVM_PIT_SPEAKER_DUMMY;
-
 	ret = ioctl(cpu.fd_vm, KVM_CREATE_PIT2, &pit);
   if (ret < 0)
     err(1, "unable to create pit");
@@ -64,7 +62,7 @@ int main(int argc, char **argv) {
     errx(1, "no space available for the image");
 
   // Load kernel
-  void *mem_img = mmap(NULL, bz_stat.st_size, PROT_READ | PROT_WRITE,
+  void *mem_img = mmap(NULL, bz_stat.st_size, PROT_READ | PROT_WRITE | PROT_EXEC,
       MAP_PRIVATE, fd_bz, 0);
 
   if (mem_img == MAP_FAILED)

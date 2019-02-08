@@ -70,37 +70,44 @@ void kvm_out_regs(struct kvm_cpu *cpu) {
 	print_segment("gs ", &cpu->sregs.gs);
 }
 
+void kvm_handle_serial(struct kvm_cpu *cpu) {
+    void *io_data = (void *)cpu->run + cpu->run->io.data_offset;
+    int lsr = 0x20;
+    switch (cpu->run->io.direction) {
+      case KVM_EXIT_IO_OUT:
+        switch (cpu->run->io.port) {
+          case 0x3f8: // THR
+            printf(io_data);
+            break;
+          default:
+            printf("KVM_EXIT_IO_OUT: 0x%x\n", cpu->run->io.port);
+            break;
+        }
+        break;
+      case KVM_EXIT_IO_IN:
+        switch (cpu->run->io.port) {
+          case 0x3fd:
+            memcpy(io_data, &lsr, sizeof(int));
+            break;
+          default:
+            printf("KVM_EXIT_IO_IN: 0x%x\n", cpu->run->io.port);
+            break;
+        }
+        break;
+      default:
+        warnx("unhandled KVM_EXIT_IO 0x%x", cpu->run->io.port);
+        break;
+    }
+}
+
 void kvm_exit_handle(struct kvm_cpu *cpu) {
     switch (cpu->run->exit_reason) {
       case KVM_EXIT_HLT:
         puts("KVM_EXIT_HLT\n");
         exit(0);
       case KVM_EXIT_IO:
-        {
-          void *io_data = cpu->run + cpu->run->io.data_offset;
-          switch (cpu->run->io.direction) {
-            case KVM_EXIT_IO_OUT:
-              printf("KVM_EXIT_IO_OUT: 0x%x\n", cpu->run->io.port);
-              switch (cpu->run->io.port) {
-                case 0x3f8:
-                  putchar((char)io_data);
-                  break;
-              }
-              break;
-            case KVM_EXIT_IO_IN:
-              printf("KVM_EXIT_IO_IN: 0x%x\n", cpu->run->io.port);
-              switch (cpu->run->io.port) {
-                case 0x3fd:
-                  printf("KVM_EXIT_IO_IN: 0x%x\n", cpu->run->io.port);
-                  break;
-              }
-              break;
-            default:
-              warnx("unhandled KVM_EXIT_IO 0x%x", cpu->run->io.port);
-              break;
-          }
-          break;
-        }
+        kvm_handle_serial(cpu);
+        break;
       case KVM_EXIT_FAIL_ENTRY:
         errx(1, "KVM_EXIT_FAIL_ENTRY: hardware_entry_failure_reason = 0x%llx",
            (unsigned long long)cpu->run->fail_entry.hardware_entry_failure_reason);
@@ -137,8 +144,8 @@ void kvm_setup_bprm(struct kvm_cpu *cpu, struct setup_header *shdr) {
 
   cpu->bprm->hdr.type_of_loader = 0xFF;
   cpu->bprm->hdr.loadflags |= KEEP_SEGMENTS;
-  cpu->bprm->hdr.loadflags |= LOADED_HIGH;
-  const char *cmdline = "earlyprintk=serial";
+//   cpu->bprm->hdr.loadflags |= LOADED_HIGH;
+  const char *cmdline = "earlyprintk=serial debug ignore_loglevel memblock=debug console=ttyS0";
 
   cpu->bprm->hdr.cmd_line_ptr = 0x40000;
   strcpy(cpu->bprm->hdr.cmd_line_ptr + cpu->region.userspace_addr, cmdline); 
@@ -146,11 +153,11 @@ void kvm_setup_bprm(struct kvm_cpu *cpu, struct setup_header *shdr) {
   struct boot_e820_entry *primary = &cpu->bprm->e820_table[0];
 	struct boot_e820_entry *secondary = &cpu->bprm->e820_table[1];
 
-  primary->addr = cpu->region.userspace_addr;
+  primary->addr = 0;
 	primary->size = cpu->region.memory_size;
 	primary->type = 1;
 
-  secondary->addr = cpu->region2.userspace_addr;
+  secondary->addr = cpu->region.memory_size;
 	secondary->size = cpu->region2.memory_size;
 	secondary->type = 1;
 
